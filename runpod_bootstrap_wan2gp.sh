@@ -1,13 +1,8 @@
-apt-get update -y >/dev/null
-  # include build tools so native builds (e.g., Cython extensions) succeed
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    git curl wget zip unzip \
-    build-essential python3-dev ninja-build pkg-config \
-    >/dev/null || true#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # ============================================================
-#  RunPod Bootstrap for Wan2GP (Er+GPT edition)
+#  RunPod Bootstrap for Wan2GP (Er+GPT edition) - SAFE_MODE removed
 # ============================================================
 
 # -------- User-tunable ENV (override via RunPod Env Vars) --------
@@ -33,13 +28,6 @@ DL_BIND="${DL_BIND:-0.0.0.0}"
 log(){ echo -e "[BOOT] $*"; }
 port_busy(){ ss -ltn | awk '{print $4}' | grep -q ":$1$"; }
 SLEEP_FOREVER(){ tail -f /dev/null; }
-
-# -------- Safe Mode --------
-# If SAFE_MODE=1, skip everything and keep the pod alive for manual fixes.
-if [ "${SAFE_MODE:-0}" = "1" ]; then
-  log "SAFE_MODE=1 → skipping bootstrap; keeping container alive."
-  SLEEP_FOREVER
-fi
 
 # -------- Prep --------
 log "Workdir: $WORKDIR"
