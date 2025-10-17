@@ -1,4 +1,9 @@
-#!/usr/bin/env bash
+apt-get update -y >/dev/null
+  # include build tools so native builds (e.g., Cython extensions) succeed
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    git curl wget zip unzip \
+    build-essential python3-dev ninja-build pkg-config \
+    >/dev/null || true#!/usr/bin/env bash
 set -euo pipefail
 
 # ============================================================
@@ -26,6 +31,15 @@ DL_BIND="${DL_BIND:-0.0.0.0}"
 
 # -------- Helpers --------
 log(){ echo -e "[BOOT] $*"; }
+port_busy(){ ss -ltn | awk '{print $4}' | grep -q ":$1$"; }
+SLEEP_FOREVER(){ tail -f /dev/null; }
+
+# -------- Safe Mode --------
+# If SAFE_MODE=1, skip everything and keep the pod alive for manual fixes.
+if [ "${SAFE_MODE:-0}" = "1" ]; then
+  log "SAFE_MODE=1 → skipping bootstrap; keeping container alive."
+  SLEEP_FOREVER
+fi
 
 # -------- Prep --------
 log "Workdir: $WORKDIR"
@@ -38,14 +52,28 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 
 # -------- Clone or Update Repo --------
+BOOT_MARKER="${BOOT_MARKER:-/workspace/.bootstrap_done}"
 if [ ! -d "$WAN_DIR/.git" ]; then
   log "Cloning Wan2GP: $REPO_URL (branch: $REPO_BRANCH)"
-  git clone --branch "$REPO_BRANCH" --depth=1 "$REPO_URL" "$WAN_DIR"
+  for i in 1 2 3; do
+    git clone --branch "$REPO_BRANCH" --depth=1 "$REPO_URL" "$WAN_DIR" && break || {
+      log "Clone failed (attempt $i), retrying in 2s..."; sleep 2;
+    }
+  done
 else
   log "Updating existing repo at $WAN_DIR"
   git -C "$WAN_DIR" remote set-url origin "$REPO_URL" || true
-  git -C "$WAN_DIR" fetch --depth=1 origin "$REPO_BRANCH"
-  git -C "$WAN_DIR" reset --hard "origin/$REPO_BRANCH"
+  git -C "$WAN_DIR" fetch --depth=1 origin "$REPO_BRANCH" || true
+  git -C "$WAN_DIR" reset --hard "origin/$REPO_BRANCH" || true
+fi
+
+# Avoid re-running heavy installs on every restart
+FIRST_BOOT=0
+if [ ! -f "$BOOT_MARKER" ]; then
+  FIRST_BOOT=1
+  log "First boot detected → will run heavy installs"
+else
+  log "Bootstrap marker found → skipping heavy installs"
 fi
 
 # -------- Python --------
@@ -60,9 +88,49 @@ else
 fi
 
 log "Preinstall build helpers: setuptools, wheel, Cython, ninja"
-$PIPBIN install -U setuptools wheel Cython ninja $PIP_EXTRA || true
+if [ "$FIRST_BOOT" = "1" ]; then
+  $PIPBIN install -U setuptools wheel Cython ninja $PIP_EXTRA || true
+else
+  log "Skip build helpers (not first boot)"
+fi
+
+# -------- Python deps for Wan2GP --------
+cd "$WAN_DIR"
+log "Install repo requirements (if present)"
+if [ "$FIRST_BOOT" = "1" ] && [ -f requirements.txt ]; then
+  $PIPBIN install -r requirements.txt $PIP_EXTRA || true
+else
+  log "Skipping requirements install (not first boot or file missing)"
+fi
+
+if [ "$FIRST_BOOT" = "1" ]; then
+  log "Pin mmgp to 3.6.2 and ensure gradio present"
+  $PIPBIN install "mmgp==3.6.2" gradio $PIP_EXTRA || true
+fi
+
+# stamp as completed heavy bootstrap
+if [ "$FIRST_BOOT" = "1" ]; then
+  touch "$BOOT_MARKER" || true
+fi
+
+# -------- Optional Download Server --------
+if [ "${DL_SERVER:-0}" = "1" ]; then
+  log "Starting download server on ${DL_BIND}:${DL_PORT} serving ${DL_ROOT}"
+  mkdir -p "$WORKDIR/logs"
+  nohup python3 -m http.server "$DL_PORT" --bind "$DL_BIND" --directory "$DL_ROOT" \
+    > "$WORKDIR/logs/dl_server_${DL_PORT}.log" 2>&1 &
+  echo $! > "$WORKDIR/logs/dl_server_${DL_PORT}.pid"
+  log "DL server PID $(cat "$WORKDIR/logs/dl_server_${DL_PORT}.pid")"
+fi
 
 # -------- Ready - Launch --------
 cd "$WAN_DIR"
+
+# If the desired port is busy, avoid restart loops; idle for debugging
+if port_busy "$PORT"; then
+  log "Port ${PORT} is already in use. Set WGP_PORT to a free port or kill the process. Going idle for debugging..."
+  SLEEP_FOREVER
+fi
+
 log "Starting Wan2GP on 0.0.0.0:${PORT}"
 exec $PYBIN "$WAN_DIR/wgp.py" --server-name 0.0.0.0 --server-port "$PORT"
