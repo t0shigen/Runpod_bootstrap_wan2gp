@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+DEBIAN_FRONTEND=noninteractive apt-get install -y git curl wget zip unzip build-essential python3-dev ninja-build pkg-config >/dev/null || true#!/usr/bin/env bash
 set -euo pipefail
 
 # ============================================================
@@ -91,6 +91,10 @@ else
   log "Using system Python from container (expected Torch 2.8.0+cu128 preinstalled)"
   $PIPBIN install --upgrade pip $PIP_EXTRA
 fi
+
+# Ensure core build tools in Python env
+log "Preinstall build helpers: setuptools, wheel, Cython, ninja"
+$PIPBIN install -U setuptools wheel Cython ninja $PIP_EXTRA || true
 
 # -------- Global caches under /workspace --------
 export HF_HOME="$WORKDIR/.cache/huggingface"
